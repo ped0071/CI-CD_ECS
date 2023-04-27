@@ -1,0 +1,55 @@
+variables:
+  TASK_NAME: "Nome da sua task"
+  CLUSTER_NAME: "Nome do seu cluster"
+  SERVICE_NAME: "Nome do seu service"
+
+before_script:
+  - docker system prune -f
+  - IMAGE_TAG="$(date +"%Y.%m.%d.%H.%M.%S")"
+
+stages:
+  - build
+  - deploy
+
+build:
+  stage: build
+  image: arm64v8/node:16-alpine
+  environment: homolog
+  script:
+    # Mostra qual a tag da imagem vai ser criada
+    - echo "Versao da imagem docker "$IMAGE_TAG
+    # Faz o build da imagem docker como o nome checkout-homolog
+    - docker build -t $CI_REGISTRY_IMAGE:latest .
+    # Exibe o nome da imagem docker e a versao criada
+    - echo "imagem docker criada $CI_REGISTRY_IMAGE:$IMAGE_TAG"
+    # Faz o login no Gitlab
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    # Cria a Tag que vai ser usaga da imagem docker para o Registry do Gitlab
+    - docker tag $CI_REGISTRY_IMAGE:latest $CI_REGISTRY_IMAGE:$IMAGE_TAG
+    # Cria uma variavel para salvar o nome da imagem docker enviada ao Registry
+    # imagemDocker=$(seu-user/imagem:$IMAGE_TAG)
+    # export imagemDocker=$(seu-user/imagem:$IMAGE_TAG)
+    # Envia a imagem para o Registry
+    - docker push $CI_REGISTRY_IMAGE:latest
+    - docker push $CI_REGISTRY_IMAGE:$IMAGE_TAG
+    - echo "Imagem docker enviada ao registry"
+    # Limpa as iamgens geradas para evitar consumo desnecessario de armazenamento na EC2
+    - docker system prune -a
+    - docker image prune -fa
+  only:
+    - develop
+
+deploy:
+  stage: deploy
+  environment: homolog
+  script:
+    # Define as variáveis ​​de ambiente necessárias
+    - echo $CI_REGISTRY_IMAGE:latest
+    - NEW_TASK_DEF=$(aws ecs describe-task-definition --task-definition $TASK_NAME)
+    - NEW_CONTAINER_DEFINTIION=$(echo $NEW_TASK_DEF | jq --arg IMAGE "$CI_REGISTRY_IMAGE:latest" '.taskDefinition.containerDefinitions[0].image = $IMAGE | .taskDefinition.containerDefinitions[0]')
+    - aws ecs register-task-definition --region "${AWS_DEFAULT_REGION}" --family "${TASK_NAME}" --container-definitions "${NEW_CONTAINER_DEFINTIION}"
+    - echo "Registrando nova definição de container..."
+    - aws ecs update-service --region "${AWS_DEFAULT_REGION}" --cluster "${CLUSTER_NAME}" --service "${SERVICE_NAME}"  --task-definition "${TASK_NAME}" --force-new-deployment
+    - echo "Atuazalizando serviço do ECS..."
+  only:
+    - develop
